@@ -62,6 +62,7 @@ int16_t Zaxis = 0; // Contains a transformed form of data read from the Z axis
 float Xaxis_g = 0 ; // Contains the acceleration in the X axis, expanded to physical unit [g]
 float Yaxis_g = 0; // Contains the acceleration in the Y axis, expanded to physical unit [g]
 float Zaxis_g = 0; // Contains the acceleration in the Z axis, expanded to physical unit [g]
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -84,8 +85,6 @@ I2C_HandleTypeDef hi2c1;
 
 osThreadId defaultTaskHandle;
 osThreadId myTask02Handle;
-osThreadId myTask03Handle;
-osMutexId myMutex01Handle;
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -96,8 +95,6 @@ static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 void StartDefaultTask(void const * argument);
 void StartTask02(void const * argument);
-void StartTask03(void const * argument);
-float at = 0;
 
 /* USER CODE BEGIN PFP */
 
@@ -142,11 +139,6 @@ int main(void)
 
   /* USER CODE END 2 */
 
-  /* Create the mutex(es) */
-  /* definition and creation of myMutex01 */
-  osMutexDef(myMutex01);
-  myMutex01Handle = osMutexCreate(osMutex(myMutex01));
-
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
@@ -171,10 +163,6 @@ int main(void)
   /* definition and creation of myTask02 */
   osThreadDef(myTask02, StartTask02, osPriorityNormal, 0, 128);
   myTask02Handle = osThreadCreate(osThread(myTask02), NULL);
-
-  /* definition and creation of myTask03 */
-  osThreadDef(myTask03, StartTask03, osPriorityNormal, 0, 128);
-  myTask03Handle = osThreadCreate(osThread(myTask03), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -294,7 +282,7 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
 }
@@ -310,9 +298,29 @@ static void MX_GPIO_Init(void)
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
+int falldetect(void)
+{
+	float at = 0;
+	HAL_I2C_Mem_Read(&hi2c1, LSM303_ACC_ADDRESS, LSM303_ACC_X_L_A_MULTI_READ, 1, Data, 6, 100);
+
+	// Convert received data bytes to int16_t type
+	Xaxis = ((Data[1] << 8) | Data[0]);
+	Yaxis = ((Data[3] << 8) | Data[2]);
+	Zaxis = ((Data[5] << 8) | Data[4]);
+
+	// calculation of acceleration in each axis in the SI unit [g]
+	Xaxis_g = ((float) Xaxis * LSM303_ACC_RESOLUTION) / (float) INT16_MAX;
+	Yaxis_g = ((float) Yaxis * LSM303_ACC_RESOLUTION) / (float) INT16_MAX;
+	Zaxis_g = ((float) Zaxis * LSM303_ACC_RESOLUTION) / (float) INT16_MAX;
+  at = sqrt(Xaxis_g*Xaxis_g + Yaxis_g*Yaxis_g + Zaxis_g*Zaxis_g);
+	if (at < 0.7)
+		return 1;
+	else 
+		return 0;
+}
 void StartDefaultTask(void const * argument)
 {
-     // Fill the configuration variable with the appropriate options
+      // Fill the configuration variable with the appropriate options
 	uint8_t Settings = LSM303_ACC_XYZ_ENABLE | LSM303_ACC_100HZ;
 	
   // Enter the configuration in the accelerometer register
@@ -322,22 +330,12 @@ void StartDefaultTask(void const * argument)
 	HAL_I2C_Mem_Write(&hi2c1, LSM303_ACC_ADDRESS, LSM303_ACC_CTRL_REG3_A, 1, &Settings, 1, 100);  
 
   /* USER CODE BEGIN 5 */
+  /* USER CODE BEGIN 5 */
   /* Infinite loop */
   for(;;)
   {
-		HAL_I2C_Mem_Read(&hi2c1, LSM303_ACC_ADDRESS, LSM303_ACC_X_L_A_MULTI_READ, 1, Data, 6, 100);
-
-		// Convert received data bytes to int16_t type
-		Xaxis = ((Data[1] << 8) | Data[0]);
-		Yaxis = ((Data[3] << 8) | Data[2]);
-		Zaxis = ((Data[5] << 8) | Data[4]);
-
-	  // calculation of acceleration in each axis in the SI unit [g]
-		Xaxis_g = ((float) Xaxis * LSM303_ACC_RESOLUTION) / (float) INT16_MAX;
-		Yaxis_g = ((float) Yaxis * LSM303_ACC_RESOLUTION) / (float) INT16_MAX;
-		Zaxis_g = ((float) Zaxis * LSM303_ACC_RESOLUTION) / (float) INT16_MAX;
-    at = sqrt(Xaxis_g*Xaxis_g + Yaxis_g*Yaxis_g + Zaxis_g*Zaxis_g);
-		osDelay(11);
+		falldetect();
+    osDelay(10);
   }
   /* USER CODE END 5 */ 
 }
@@ -352,50 +350,35 @@ void StartDefaultTask(void const * argument)
 void StartTask02(void const * argument)
 {
   /* USER CODE BEGIN StartTask02 */
+	int i = 0;
   /* Infinite loop */
   for(;;)
   {
-		osMutexWait(myMutex01Handle,osWaitForever );	
-		do {
-    HAL_GPIO_WritePin(GPIOD,GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15,GPIO_PIN_SET);
-    osDelay(500);
-		if (at < 0.7)
+		while(falldetect() == 1) {
+		for	(i = 0;i < 150;i++) {
+		HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15);
+    osDelay(50);
+		}
+		}
+		while(falldetect() == 0) {
+			HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15);
+      osDelay(250);
+			if (falldetect() == 1)
+				break;
+			
+			osDelay(250);
+			if (falldetect() == 1)
+				break;
+			HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15);
+			osDelay(250);
+			if (falldetect() == 1)
 			break;
-		HAL_GPIO_WritePin(GPIOD,GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15,GPIO_PIN_RESET);
-		osDelay(500); } while (at > 0.7);
-		osMutexRelease(myMutex01Handle);
-		osDelay(1);
+			osDelay(250);
+			if (falldetect() == 1)
+				break;
+		}
   }
   /* USER CODE END StartTask02 */
-}
-
-/* USER CODE BEGIN Header_StartTask03 */
-/**
-* @brief Function implementing the myTask03 thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartTask03 */
-void StartTask03(void const * argument)
-{
-  /* USER CODE BEGIN StartTask03 */
-  /* Infinite loop */
-	int i = 0;
-  for(;;)
-  {
-		osMutexWait(myMutex01Handle,osWaitForever );
-    for	(i = 0;i < 150;i++) {
-		HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_14|GPIO_PIN_13|GPIO_PIN_12|GPIO_PIN_15);
-    osDelay(50);
-		HAL_GPIO_TogglePin(GPIOD,GPIO_PIN_14|GPIO_PIN_13|GPIO_PIN_12|GPIO_PIN_15);
-		osDelay(50);	
-		}	
-		if (i == 1000)
-			i=0;
-		osMutexRelease(myMutex01Handle);
-		osDelay(1);
-  }
-  /* USER CODE END StartTask03 */
 }
 
 /**
